@@ -37,7 +37,19 @@ jobs:
           TILECAM_KEY_PASSWORD: ${{ secrets.TILECAM_KEY_PASSWORD }}
         run: |
           export TILECAM_KEYSTORE="$RUNNER_TEMP/release.jks"
-          echo "$KEYSTORE_BASE64" | base64 -d > "$TILECAM_KEYSTORE"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$TILECAM_KEYSTORE"
+          else
+            # No signing secrets yet: sign with a throwaway key so the APK installs for testing.
+            # Builds signed this way can't be updated in place by later releases.
+            echo "::warning::Signing secrets missing; using a throwaway key"
+            echo "THROWAWAY_KEY=1" >> "$GITHUB_ENV"
+            export TILECAM_KEYSTORE_PASSWORD=$(openssl rand -hex 16)
+            export TILECAM_KEY_PASSWORD=$TILECAM_KEYSTORE_PASSWORD TILECAM_KEY_ALIAS=throwaway
+            keytool -genkeypair -noprompt -keystore "$TILECAM_KEYSTORE" -storetype PKCS12 -alias throwaway \
+              -keyalg RSA -keysize 2048 -validity 365 -dname "CN=TileCam test build" \
+              -storepass "$TILECAM_KEYSTORE_PASSWORD" -keypass "$TILECAM_KEY_PASSWORD"
+          fi
           ./gradlew --no-daemon assembleRelease
           rm -f "$TILECAM_KEYSTORE"
           mkdir -p dist
@@ -47,4 +59,9 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "TileCam $VERSION" --generate-notes --prerelease
+        run: |
+          notes=""
+          if [ -n "$THROWAWAY_KEY" ]; then
+            notes="Test build signed with a throwaway key: uninstall it before installing a later release."
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* --title "TileCam $VERSION" --notes "$notes" --generate-notes --prerelease
