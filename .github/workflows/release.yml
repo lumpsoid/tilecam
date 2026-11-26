@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Check tag matches versionName
+        run: |
+          version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match versionName $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.TILECAM_KEYSTORE_BASE64 }}
+          TILECAM_KEYSTORE_PASSWORD: ${{ secrets.TILECAM_KEYSTORE_PASSWORD }}
+          TILECAM_KEY_ALIAS: ${{ secrets.TILECAM_KEY_ALIAS }}
+          TILECAM_KEY_PASSWORD: ${{ secrets.TILECAM_KEY_PASSWORD }}
+        run: |
+          export TILECAM_KEYSTORE="$RUNNER_TEMP/release.jks"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$TILECAM_KEYSTORE"
+          ./gradlew --no-daemon assembleRelease
+          rm -f "$TILECAM_KEYSTORE"
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/tilecam-$VERSION.apk"
+          (cd dist && sha256sum "tilecam-$VERSION.apk" > "tilecam-$VERSION.apk.sha256")
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "TileCam $VERSION" --generate-notes --prerelease
