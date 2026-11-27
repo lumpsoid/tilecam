@@ -13,7 +13,7 @@ import kotlin.math.sqrt
 /**
  * Where the camera points, in degrees.
  * [yaw] is relative to the reference set by [OrientationTracker.setReference], positive to the right.
- * [pitch] is above the horizon, [roll] is positive when the right side of the screen is raised.
+ * [pitch] is above the horizon, [roll] is the turn about the lens axis, positive when the right side of the screen is raised.
  * [speed] is how fast the pointing direction moves, in degrees per second.
  */
 data class Pose(val yaw: Double, val pitch: Double, val roll: Double, val speed: Double)
@@ -76,7 +76,8 @@ class OrientationTracker(context: Context, private val displayRotation: Int, pri
         val dir = doubleArrayOf(-r[2].toDouble(), -r[5].toDouble(), -r[8].toDouble())
         val pitch = Math.toDegrees(asin(dir[2].coerceIn(-1.0, 1.0)))
         heading = Math.toDegrees(atan2(dir[0], dir[1]))
-        val roll = Math.toDegrees(asin(r[6].toDouble().coerceIn(-1.0, 1.0)))
+        // Height of screen-right against height of screen-up, so roll stays a pure turn about the lens at any pitch.
+        val roll = Math.toDegrees(atan2(r[6].toDouble(), r[7].toDouble()))
 
         lastDir?.let { prev ->
             val dt = (event.timestamp - lastTimestamp) / 1e9

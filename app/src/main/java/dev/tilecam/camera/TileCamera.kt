@@ -12,6 +12,7 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Size
@@ -122,7 +123,11 @@ class TileCamera(context: Context, val choice: LensChoice, displayRotation: Int)
         b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
         // Electronic stabilisation crops and warps frames, which would change the field of view per tile.
         b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-        if (choice.zoom > 1f) b.set(CaptureRequest.SCALER_CROP_REGION, cropRegion())
+        if (choice.zoomByRatio && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            b.set(CaptureRequest.CONTROL_ZOOM_RATIO, choice.zoom)
+        } else if (choice.zoom > 1f) {
+            b.set(CaptureRequest.SCALER_CROP_REGION, cropRegion())
+        }
     }
 
     private fun cropRegion(): Rect {

@@ -39,7 +39,6 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.cos
-import kotlin.math.max
 
 class MainActivity : ComponentActivity() {
 
@@ -202,12 +201,17 @@ class MainActivity : ComponentActivity() {
     private fun render() {
         overlay.cornerA = cornerA
         overlay.session = session
+        if (mode != Mode.CORNER_A) overlay.selection = null
         if (mode != Mode.SHOOTING) {
             overlay.target = null
             overlay.hold = 0f
         }
         val lens = choice?.let {
-            val zoom = if (it.zoom > 1f) ", %.1f× crop".format(it.zoom) else ""
+            val zoom = when {
+                it.zoomByRatio -> ", %.1f× zoom, telephoto if the phone has one".format(it.zoom)
+                it.zoom > 1f -> ", %.1f× crop".format(it.zoom)
+                else -> ""
+            }
             " (lens ≈ %.0f mm$zoom)".format(it.lens.equivalentMm)
         } ?: ""
         primary.isEnabled = camera != null && mode != Mode.STITCHING &&
@@ -236,6 +240,7 @@ class MainActivity : ComponentActivity() {
                 val a = cornerA
                 if (c != null && a != null) {
                     val plan = GridPlan.between(a, p, c.hFovDeg, c.vFovDeg)
+                    overlay.selection = plan
                     status.text = "Aim at the opposite corner: ${plan.cols} × ${plan.rows} = ${plan.size} tiles"
                 }
             }
@@ -261,9 +266,9 @@ class MainActivity : ComponentActivity() {
 
         val dYaw = wrapDegrees(t.yaw - p.yaw) * cos(Math.toRadians(p.pitch))
         val dPitch = t.pitch - p.pitch
-        val tolerance = max(1.0, c.hFovDeg * 0.04)
+        val tolerance = GridPlan.aimTolerance(c.hFovDeg)
         val aligned = abs(dYaw) < tolerance && abs(dPitch) < tolerance
-        val level = abs(p.roll) < GuidanceOverlay.LEVEL_TOLERANCE
+        val level = abs(p.roll) < GridPlan.LEVEL_TOLERANCE
         val steady = p.speed < STEADY_DEG_PER_S
         val done = s.captured().size
         val retake = if (s.states[t.index] == TileState.WEAK) " (retake: not enough overlap)" else ""

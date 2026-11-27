@@ -23,10 +23,11 @@ Raw tiles and `session.json` (pose of each tile) are kept in the app's files dir
 
 | File | Role |
 |---|---|
-| `camera/LensSelector.kt` | Picks the back lens closest to 50 mm; falls back to cropping the main lens |
+| `camera/LensSelector.kt` | Picks a listed back lens near 50 mm; otherwise zooms by ratio so the phone can use a hidden telephoto; crops on Android 10 |
 | `camera/TileCamera.kt` | Camera2: preview, full-res JPEG, focus/exposure/WB lock, EIS off |
 | `sensors/OrientationTracker.kt` | Game rotation vector → yaw / pitch / roll / angular speed |
-| `capture/GridPlan.kt` | Tile grid between two corners, 30 % overlap, serpentine order |
+| `sensors/Aim.kt` | Pinhole camera orientation: world rays ↔ image coordinates |
+| `capture/GridPlan.kt` | Tile grid between two corners on a flat scene plane, 30 % overlap checked through each tile's real frame, serpentine order |
 | `capture/ShootSession.kt` | Tile states, retakes, `session.json` |
 | `ui/GuidanceOverlay.kt` | Target, captured tiles, level line, hold ring, minimap |
 | `stitch/Stitcher.kt` | SIFT matching → spanning tree of homographies (gyro fallback) → strip-wise feathered blend |
@@ -34,6 +35,9 @@ Raw tiles and `session.json` (pose of each tile) are kept in the app's files dir
 ## Known limits / next steps
 
 - Flat projection: fine up to roughly 90° total width. For wider scenes switch to a spherical warp.
+- The grid assumes an upright scene facing you (or, when aiming steeply, one facing the phone). A poster seen
+  at a sideways angle is a trapezoid, so two corners can't pin it down; stand square to it.
+- Zooming by ratio leaves the lens choice to the phone: some phones stay on a crop of the main lens in low light.
 - Feather blending; multi-band blending and seam finding would hide moving objects and vignetting better.
 - No crop of the black border around the stitched result yet.
 - Only lens sizes from the standard stream map are used; RAW/DNG capture is not implemented.
