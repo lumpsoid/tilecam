@@ -10,21 +10,25 @@ import android.graphics.PointF
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
+import dev.tilecam.capture.GridPlan
 import dev.tilecam.capture.ShootSession
 import dev.tilecam.capture.TileState
 import dev.tilecam.capture.TileTarget
+import dev.tilecam.sensors.Aim
 import dev.tilecam.sensors.Pose
-import dev.tilecam.sensors.wrapDegrees
+import dev.tilecam.sensors.Vec3
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.sin
+import kotlin.math.tan
 
 /**
  * Draws the shooting guidance on top of the preview:
  * captured tiles where they sit in the scene (so the overlap is visible), the next target,
  * a level line, an auto-capture hold ring and a minimap of the grid.
+ * Everything is projected through the same pinhole model as the camera, so frames line up with the preview.
  */
 class GuidanceOverlay @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) :
     View(context, attrs) {
@@ -34,6 +38,8 @@ class GuidanceOverlay @JvmOverloads constructor(context: Context, attrs: Attribu
     var vFov = 27.0
     /** First corner while the user is selecting the scene. */
     var cornerA: Pose? = null
+    /** The grid the selection would give, while the user aims at the opposite corner. */
+    var selection: GridPlan? = null
     var session: ShootSession? = null
     var target: TileTarget? = null
     /** Auto-capture progress, 0..1. */
@@ -52,56 +58,62 @@ class GuidanceOverlay @JvmOverloads constructor(context: Context, attrs: Attribu
 
     override fun onDraw(canvas: Canvas) {
         val p = pose ?: return
-        val ppd = width / hFov
+        val view = Aim.of(p)
         val s = session
-        if (s == null) cornerA?.let { drawSelection(canvas, p, it, ppd) }
-        if (s != null) drawShots(canvas, p, s, ppd)
-        target?.let { drawTarget(canvas, p, it, ppd) }
+        selection?.let { drawSelection(canvas, view, it) }
+        if (s != null) drawShots(canvas, view, s)
+        target?.let { drawTarget(canvas, view, it) }
         drawLevel(canvas, p)
         drawCrosshair(canvas)
         if (s != null) drawMinimap(canvas, p, s)
     }
 
-    /** Scene angles to screen pixels, accounting for the phone's roll. */
-    private fun project(p: Pose, yaw: Double, pitch: Double, ppd: Double, out: PointF) {
-        val dx = wrapDegrees(yaw - p.yaw) * cos(Math.toRadians((pitch + p.pitch) / 2))
-        val dy = -(pitch - p.pitch)
-        val r = Math.toRadians(p.roll)
-        val x = dx * cos(r) - dy * sin(r)
-        val y = dx * sin(r) + dy * cos(r)
-        out.set((width / 2 + x * ppd).toFloat(), (height / 2 + y * ppd).toFloat())
+    /** Screen position of the world ray [d] seen from [view], or false when it is behind the phone. */
+    private fun project(view: Aim, d: Vec3, out: PointF): Boolean {
+        val (x, y) = view.toImage(d) ?: return false
+        out.set((width / 2 * (1 + x / tan(Math.toRadians(hFov / 2)))).toFloat(),
+            (height / 2 * (1 - y / tan(Math.toRadians(vFov / 2)))).toFloat())
+        return true
     }
 
-    private fun quad(p: Pose, yaw: Double, pitch: Double, halfYaw: Double, halfPitch: Double, ppd: Double): Path {
+    /**
+     * Outline through world rays [corners] into [path]; false if any is behind the phone.
+     * Straight lines stay straight under a pinhole projection, so the corners are enough.
+     */
+    private fun outline(view: Aim, corners: List<Vec3>): Boolean {
         path.reset()
-        val corners = arrayOf(-1.0 to 1.0, 1.0 to 1.0, 1.0 to -1.0, -1.0 to -1.0)
-        corners.forEachIndexed { i, (sx, sy) ->
-            project(p, yaw + sx * halfYaw, pitch + sy * halfPitch, ppd, pt)
+        corners.forEachIndexed { i, d ->
+            if (!project(view, d, pt)) return false
             if (i == 0) path.moveTo(pt.x, pt.y) else path.lineTo(pt.x, pt.y)
         }
         path.close()
-        return path
+        return true
     }
 
-    private fun tileQuad(p: Pose, yaw: Double, pitch: Double, ppd: Double) =
-        quad(p, yaw, pitch, hFov / 2 / cos(Math.toRadians(pitch)), vFov / 2, ppd)
+    /** The frame a camera at [yaw], [pitch], [roll] sees. */
+    private fun frame(view: Aim, yaw: Double, pitch: Double, roll: Double): Boolean {
+        val tile = Aim.of(yaw, pitch, roll)
+        val x = tan(Math.toRadians(hFov / 2))
+        val y = tan(Math.toRadians(vFov / 2))
+        return outline(view, listOf(tile.ray(-x, y), tile.ray(x, y), tile.ray(x, -y), tile.ray(-x, -y)))
+    }
 
-    private fun drawSelection(c: Canvas, p: Pose, a: Pose, ppd: Double) {
-        val halfYaw = wrapDegrees(p.yaw - a.yaw) / 2
-        val halfPitch = (p.pitch - a.pitch) / 2
-        quad(p, a.yaw + halfYaw, a.pitch + halfPitch, abs(halfYaw), abs(halfPitch), ppd)
-        fill.color = Color.argb(40, 255, 255, 255)
-        c.drawPath(path, fill)
-        c.drawPath(path, dashed)
-        project(p, a.yaw, a.pitch, ppd, pt)
+    private fun drawSelection(c: Canvas, view: Aim, plan: GridPlan) {
+        if (outline(view, plan.outline)) {
+            fill.color = Color.argb(40, 255, 255, 255)
+            c.drawPath(path, fill)
+            c.drawPath(path, dashed)
+        }
+        val a = cornerA ?: return
+        if (!project(view, Aim.of(a).forward, pt)) return
         fill.color = Color.YELLOW
         c.drawCircle(pt.x, pt.y, 8 * dp, fill)
     }
 
-    private fun drawShots(c: Canvas, p: Pose, s: ShootSession, ppd: Double) {
+    private fun drawShots(c: Canvas, view: Aim, s: ShootSession) {
         for (shot in s.captured()) {
+            if (!frame(view, shot.yaw, shot.pitch, shot.roll)) continue
             val color = stateColor(s.states[shot.index])
-            tileQuad(p, shot.yaw, shot.pitch, ppd)
             fill.color = Color.argb(50, Color.red(color), Color.green(color), Color.blue(color))
             stroke.color = color
             c.drawPath(path, fill)
@@ -109,19 +121,21 @@ class GuidanceOverlay @JvmOverloads constructor(context: Context, attrs: Attribu
         }
     }
 
-    private fun drawTarget(c: Canvas, p: Pose, t: TileTarget, ppd: Double) {
-        c.drawPath(tileQuad(p, t.yaw, t.pitch, ppd), dashed)
-        project(p, t.yaw, t.pitch, ppd, pt)
+    private fun drawTarget(c: Canvas, view: Aim, t: TileTarget) {
+        if (frame(view, t.yaw, t.pitch, 0.0)) c.drawPath(path, dashed)
+        val d = Aim.of(t.yaw, t.pitch).forward
         val cx = width / 2f
         val cy = height / 2f
         val margin = 24 * dp
-        val onScreen = pt.x in margin..(width - margin) && pt.y in margin..(height - margin)
+        val inFront = project(view, d, pt)
+        val onScreen = inFront && pt.x in margin..(width - margin) && pt.y in margin..(height - margin)
         fill.color = Color.WHITE
         if (onScreen) {
             c.drawCircle(pt.x, pt.y, 10 * dp, fill)
             return
         }
-        // Off screen: an arrow at the edge pointing towards the target.
+        // Off screen: an arrow at the edge pointing towards the target (also when it is behind the phone).
+        if (!inFront) pt.set(cx + (d dot view.right).toFloat(), cy - (d dot view.up).toFloat())
         val dx = pt.x - cx
         val dy = pt.y - cy
         val len = hypot(dx, dy)
@@ -144,7 +158,7 @@ class GuidanceOverlay @JvmOverloads constructor(context: Context, attrs: Attribu
         val half = width * 0.15f
         val dx = (cos(r) * half).toFloat()
         val dy = (sin(r) * half).toFloat()
-        stroke.color = if (abs(p.roll) < LEVEL_TOLERANCE) Color.GREEN else Color.rgb(255, 140, 0)
+        stroke.color = if (abs(p.roll) < GridPlan.LEVEL_TOLERANCE) Color.GREEN else Color.rgb(255, 140, 0)
         c.drawLine(width / 2f - dx, height / 2f - dy, width / 2f + dx, height / 2f + dy, stroke)
     }
 
@@ -179,24 +193,18 @@ class GuidanceOverlay @JvmOverloads constructor(context: Context, attrs: Attribu
             c.drawRect(left, top, left + cell, top + cell, fill)
         }
         // Where the camera points now, in grid units.
-        val col = fraction(p.yaw, plan.colYaws).coerceIn(-0.5, plan.cols - 0.5)
-        val row = fraction(p.pitch, plan.rowPitches).coerceIn(-0.5, plan.rows - 0.5)
+        val (gridCol, gridRow) = plan.gridPosition(p) ?: return
+        val col = gridCol.coerceIn(-0.5, plan.cols - 0.5)
+        val row = gridRow.coerceIn(-0.5, plan.rows - 0.5)
         stroke.color = Color.CYAN
         c.drawCircle((x0 + col * (cell + gap) + cell / 2).toFloat(), (y0 + row * (cell + gap) + cell / 2).toFloat(),
             cell / 3, stroke)
     }
-
-    private fun fraction(v: Double, centres: DoubleArray): Double =
-        if (centres.size < 2) 0.0 else (v - centres[0]) / (centres[1] - centres[0])
 
     private fun stateColor(state: TileState) = when (state) {
         TileState.PENDING -> Color.argb(160, 120, 120, 120)
         TileState.CHECKING -> Color.YELLOW
         TileState.OK -> Color.GREEN
         TileState.WEAK -> Color.RED
-    }
-
-    companion object {
-        const val LEVEL_TOLERANCE = 3.0
     }
 }
